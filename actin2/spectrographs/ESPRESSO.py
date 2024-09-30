@@ -23,6 +23,7 @@ spec_hdrs = dict(
     bis      = 'HIERARCH ESO QC CCF BIS SPAN', # CCF bisector span [km/s]     
     bis_err  = 'HIERARCH ESO QC CCF BIS SPAN ERROR', # CCF bisector span err
     exptime  = 'EXPTIME',
+    airmass  = 'HIERARCH ESO TEL3 AIRM START',
     snr50    = 'HIERARCH ESO QC ORDER50 SNR',
     spec_rv  = 'HIERARCH ESO OCS OBJ RV',
     ra       = 'RA',      # [deg]
@@ -30,7 +31,7 @@ spec_hdrs = dict(
     prog_id  = 'HIERARCH ESO OBS PROG ID',
     pi_coi   = 'PI-COI',
     ftype    = 'HIERARCH ESO PRO CATG',
-    drs_id   = 'HIERARCH ESO PRO REC1 DRS ID',
+    drs_id   = "ESO PRO REC1 PIPE ID",
     ccf_mask = 'HIERARCH ESO QC CCF MASK',
 
 )
@@ -80,6 +81,10 @@ class ESPRESSO:
         flg = 'OK'
         instr = 'ESPRESSO'
 
+        np.seterr(divide='ignore', invalid='ignore')
+
+        self.file = file
+
         printif(f"Reading spectrum file: {file}", verb)
 
         # Create dictionary to hold the spectrum data
@@ -98,7 +103,6 @@ class ESPRESSO:
         snr_med, _ = self._get_snr(hdr)
         headers['snr_med'] = snr_med
 
-
         # if no instrument keyword is present in fits file:
         if headers['instr'] is None:
             headers['instr'] = instr
@@ -108,6 +112,8 @@ class ESPRESSO:
             headers['ftype'] = 'S1D'
         if len(spec['flux_raw'].shape) == 2:
             headers['ftype'] = 'S2D'
+            
+            spec['flux'] = spec['flux_raw']
 
 
         # The RV used to calibrate the wavelength to the stellar rest frame can come from the CCF, the spectrum headers or as input:
@@ -132,7 +138,7 @@ class ESPRESSO:
             return
 
 
-        keys = ['rv', 'berv', 'ccf_noise', 'fwhm', 'spec_rv', 'rv_wave_corr']
+        keys = ['rv', 'rv_err', 'berv', 'ccf_noise', 'fwhm', 'fwhm_err', 'bis', 'bis_err', 'spec_rv', 'rv_wave_corr']
         for key in keys:
             if key in headers:
                 try:
@@ -144,8 +150,9 @@ class ESPRESSO:
         # shift wave to target rest frame:
         spec['wave'] = wave_star_rest_frame(spec['wave_raw'], headers['rv_wave_corr'])
 
-        # flux already deblazed in S1D and S2D files
-        spec['flux'] = spec['flux_raw']
+        # flux already deblazed in S1D files
+        if headers['ftype'] == 'S1D':
+            spec['flux'] = spec['flux_raw']
 
         headers['spec_flg'] = 'OK'
 
@@ -155,20 +162,21 @@ class ESPRESSO:
             printif("Reading CCF file", verb)
             ccf_file, _ = self._search_file(file, type='CCF', verb=False)
 
-            hdu = fits.open(ccf_file)
+            if ccf_file is not None:
+                hdu = fits.open(ccf_file)
 
-            rv_step = hdr['HIERARCH ESO RV STEP'] # [km/s]
-            rv_ref_pix = hdr['HIERARCH ESO RV START'] # [km/s]
+                rv_step = hdr['HIERARCH ESO RV STEP'] # [km/s]
+                rv_ref_pix = hdr['HIERARCH ESO RV START'] # [km/s]
 
-            rv_grid = np.array([rv_ref_pix+ i * rv_step for i in range(hdu[1].data[0].size)])
+                rv_grid = np.array([rv_ref_pix+ i * rv_step for i in range(hdu[1].data[0].size)])
 
-            ccf_profile = dict(
-                rv          = rv_grid,
-                profile     = hdu[1].data,
-                profile_err = hdu[2].data
-            )
+                ccf_profile = dict(
+                    rv          = rv_grid,
+                    profile     = hdu[1].data,
+                    profile_err = hdu[2].data
+                )
 
-            self.ccf_profile = ccf_profile
+                self.ccf_profile = ccf_profile
 
 
         # save spectrum:
@@ -255,11 +263,20 @@ class ESPRESSO:
                 wave_raw = hdu[1].data['wavelength_air'],
             )
 
-        elif hdr['HIERARCH ESO PRO CATG'] in ['S2D_A', 'S2D_BLAZE_A']:
+        elif hdr['HIERARCH ESO PRO CATG'] == 'S1D_FINAL_A':
+            spectrum = hdu['SPECTRUM'].data
             spec = dict(
-                flux_raw = hdu[1].data, # blazed
-                flux_err = hdu[2].data,
-                wave_raw = hdu[5].data # wavelength air (bary)
+                flux_raw = spectrum['FLUX_EL'][0],
+                flux_err = spectrum['ERR_EL'][0],
+                wave_raw = spectrum['WAVE_AIR'][0]
+            )
+
+        elif hdr['HIERARCH ESO PRO CATG'] == 'S2D_A':
+            spec = dict(
+                flux_raw = hdu['SCIDATA'].data, # deblazed
+                flux_err = hdu['ERRDATA'].data,
+                wave_raw = hdu['WAVEDATA_AIR_BARY'].data, # wavelength air (bary)
+                dlldata = hdu['DLLDATA_AIR_BARY'].data, # pixel sizes
             )
         
         else:
