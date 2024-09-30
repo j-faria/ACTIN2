@@ -1,5 +1,0 @@
-ipykernel
-nbsphinx
-numpy
-tqdm
-astropy
